@@ -593,6 +593,8 @@ export class KuroCatEngine {
       this.catBreed = 'black';
       this.customSkin = null;
     }
+    // Match the 3D renderer: skin.eyeSoft droops the upper lid at rest.
+    this.eyeSoft = this.customSkin ? this.customSkin.eyeSoft : 0;
     this.syncLayoutPositions();
     this.wakeRendering();
   }
@@ -787,6 +789,8 @@ export class KuroCatEngine {
   private lastPetMoveAt = -10000;
   private petEnergy = 0;
   private squintAmount = 0;
+  /** 0..1 resting eyelid droop taken from the custom skin (matches 3D). */
+  private eyeSoft = 0;
   private earTwitchLeft = 0;
   private earTwitchRight = 0;
   private recentKeyTimes: number[] = [];
@@ -3269,7 +3273,7 @@ export class KuroCatEngine {
         ? 0.92 * Math.sin(Math.max(0, Math.min(1, (nowEye - this.idleAct.t0) / this.idleAct.dur)) * Math.PI)
         : 0;
     const blinkVal = Math.max(this.isBlinking ? 1 - Math.abs(this.blinkProgress - 1) : 0, slowBlinkVal);
-    const closedness = Math.max(blinkVal, this.squintAmount * 0.85, this.privacyClose, this.sleepAmount);
+    const closedness = Math.max(blinkVal, this.squintAmount * 0.85, this.eyeSoft * 0.5, this.privacyClose, this.sleepAmount);
     const curious = Math.min(1, this.curiousAmount);
     const cross = this.crossAmount;
 
@@ -4570,11 +4574,23 @@ export class KuroCatEngine {
         ctx.fill();
       }
       ctx.restore();
-    } else if (s.pattern === 'tuxedo' && s.bellyBibColor) {
+    } else if ((s.pattern === 'tuxedo' || s.whiteBlaze) && s.bellyBibColor) {
       ctx.fillStyle = s.bellyBibColor;
       ctx.beginPath();
       ctx.ellipse(maskShift, 22, 26, 15, 0, 0, Math.PI * 2);
       ctx.fill();
+      if (s.whiteBlaze && s.pattern !== 'tuxedo') {
+        // Tapered blaze running up the nose bridge between the eyes, so a tabby
+        // can keep its stripes while getting the tuxedo-style white face.
+        const k = Math.max(0.4, Math.min(2.6, (s.blazeWidth || 0.14) / 0.14));
+        ctx.beginPath();
+        ctx.moveTo(maskShift - 15 * k, 14);
+        ctx.quadraticCurveTo(maskShift - 5 * k, -1, maskShift, -8);
+        ctx.quadraticCurveTo(maskShift + 5 * k, -1, maskShift + 15 * k, 14);
+        ctx.quadraticCurveTo(maskShift, 21, maskShift - 15 * k, 14);
+        ctx.closePath();
+        ctx.fill();
+      }
     } else if (s.pattern === 'siamese' && s.maskColor) {
       ctx.save();
       ctx.fillStyle = s.maskColor;
@@ -4607,14 +4623,13 @@ export class KuroCatEngine {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.globalAlpha = 0.78;
-      // Center M stripes on forehead
+      // Real tabby forehead "M": two outer strokes + two inner diagonals meeting low.
       ctx.beginPath();
-      ctx.moveTo(maskShift - 11, -30);
-      ctx.lineTo(maskShift - 8, -19);
-      ctx.moveTo(maskShift, -32);
-      ctx.lineTo(maskShift, -18);
-      ctx.moveTo(maskShift + 11, -30);
-      ctx.lineTo(maskShift + 8, -19);
+      ctx.moveTo(maskShift - 12.5, -17);
+      ctx.lineTo(maskShift - 9, -32);
+      ctx.lineTo(maskShift, -20);
+      ctx.lineTo(maskShift + 9, -32);
+      ctx.lineTo(maskShift + 12.5, -17);
       ctx.stroke();
       // Cheek tiger stripes
       ctx.lineWidth = 2.8;
@@ -4817,7 +4832,7 @@ export class KuroCatEngine {
         ? 0.92 * Math.sin(Math.max(0, Math.min(1, (nowEye - this.idleAct.t0) / this.idleAct.dur)) * Math.PI)
         : 0;
     const blinkVal = Math.max(this.isBlinking ? 1 - Math.abs(this.blinkProgress - 1) : 0, slowBlinkVal);
-    const closedness = Math.max(blinkVal, this.squintAmount * 0.85, this.privacyClose, this.sleepAmount);
+    const closedness = Math.max(blinkVal, this.squintAmount * 0.85, this.eyeSoft * 0.5, this.privacyClose, this.sleepAmount);
     const curious = Math.min(1, this.curiousAmount);
     const cross = this.crossAmount;
     const eyeXs = [cx - 23.0, cx + 23.0];

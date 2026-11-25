@@ -31,6 +31,28 @@ fn default_obs_hide_pet() -> bool {
     false
 }
 
+fn default_net_port() -> u16 {
+    crate::net::DEFAULT_PORT
+}
+
+pub fn normalize_net_server(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    trimmed.chars().filter(|c| !c.is_whitespace()).take(120).collect()
+}
+
+pub fn normalize_net_room(raw: &str) -> String {
+    crate::net::sanitize_room(raw)
+}
+
+pub fn normalize_net_name(raw: &str) -> String {
+    let name: String = raw.trim().chars().filter(|c| !c.is_control()).take(16).collect();
+    name
+}
+
 pub fn default_render_mode() -> String {
     "3d".to_string()
 }
@@ -183,6 +205,27 @@ pub struct AppSettings {
     pub collar_color: String,
     #[serde(default = "default_headphone_mode")]
     pub headphone_mode: String,
+    /// Display name shown in the friend's window.
+    #[serde(default)]
+    pub net_name: String,
+    /// Relay address (`host:port`). Empty means "use the local network host mode".
+    #[serde(default)]
+    pub net_server: String,
+    /// Last room code used, so reconnecting is a single click.
+    #[serde(default)]
+    pub net_room: String,
+    /// Port used when hosting a LAN room on this machine.
+    #[serde(default = "default_net_port")]
+    pub net_port: u16,
+    /// Manual position of the friend's cat window (None = auto, next to our cat).
+    #[serde(default)]
+    pub peer_x: Option<i32>,
+    #[serde(default)]
+    pub peer_y: Option<i32>,
+    /// Microphone reaction: the cat opens its mouth (and floats characters) while
+    /// the user speaks. Off by default because it needs mic permission.
+    #[serde(default)]
+    pub voice_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -214,11 +257,26 @@ impl Default for AppSettings {
             render_mode: default_render_mode(),
             collar_color: default_collar_color(),
             headphone_mode: default_headphone_mode(),
+            net_name: String::new(),
+            net_server: String::new(),
+            net_room: String::new(),
+            net_port: default_net_port(),
+            peer_x: None,
+            peer_y: None,
+            voice_enabled: false,
         }
     }
 }
 
 pub fn app_data_dir() -> PathBuf {
+    // Escape hatch: point a second instance at its own folder so two pets can run
+    // side by side (self-testing multiplayer, different profiles, ...).
+    if let Ok(custom) = std::env::var("KUROCAT_DATA_DIR") {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
     #[cfg(windows)]
     {
         let base = std::env::var("APPDATA")

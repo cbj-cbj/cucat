@@ -54,6 +54,16 @@ pub struct CatSkinConfig {
     pub flank_color: Option<String>,
     #[serde(default)]
     pub belly_bib_color: Option<String>,
+    /// Draw the tuxedo/bicolor white face blaze and chest bib even when pattern
+    /// is another preset (lets a tabby keep its stripes and still get a white face).
+    #[serde(default)]
+    pub white_blaze: bool,
+    /// Half-width of the white blaze at the top (0.05..0.40, default 0.14).
+    #[serde(default)]
+    pub blaze_width: Option<f32>,
+    /// 0..1 resting eyelid droop (gentle / pleading expression).
+    #[serde(default)]
+    pub eye_soft: Option<f32>,
     #[serde(default)]
     pub stripe_color: Option<String>,
     #[serde(default)]
@@ -169,6 +179,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: None,
             belly_bib_color: None,
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: None,
             ear_outer_color: Some("#141314".to_string()),
@@ -212,6 +225,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: Some("#d0c2b0".to_string()),
             flank_color: Some("#8a7b6c".to_string()),
             belly_bib_color: Some("#fbf9f3".to_string()),
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: None,
             ear_outer_color: Some("#8b7c6e".to_string()),
@@ -255,6 +271,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: None,
             belly_bib_color: Some("#fdf6e8".to_string()),
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: Some("#b85d19".to_string()),
             calico_patch_color: None,
             ear_outer_color: Some("#e38c38".to_string()),
@@ -298,6 +317,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: None,
             belly_bib_color: None,
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: Some("#3c3634".to_string()),
             ear_outer_color: Some("#3c3634".to_string()),
@@ -341,6 +363,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: None,
             belly_bib_color: Some("#faf9f5".to_string()),
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: None,
             ear_outer_color: Some("#1d1f24".to_string()),
@@ -384,6 +409,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: Some("#cbb9a0".to_string()),
             belly_bib_color: None,
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: None,
             ear_outer_color: Some("#3e2e24".to_string()),
@@ -427,6 +455,9 @@ pub fn builtin_cats() -> Vec<CatSkinConfig> {
             forehead_bridge_color: None,
             flank_color: None,
             belly_bib_color: None,
+            white_blaze: false,
+            blaze_width: None,
+            eye_soft: None,
             stripe_color: None,
             calico_patch_color: None,
             ear_outer_color: None,

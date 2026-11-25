@@ -19,6 +19,9 @@
         <button class="menu-tab-btn" data-tab="system" type="button" role="tab" aria-selected="false">
           ⚙️ 键盘·OBS·系统
         </button>
+        <button class="menu-tab-btn" data-tab="net" type="button" role="tab" aria-selected="false">
+          🐾 好友联机
+        </button>
       </div>
 
       <div class="tab-body" id="menu-tab-body">
@@ -74,6 +77,10 @@
           <button class="menu-item" data-action="toggle-sound">
             <span>摸头呼噜声</span>
             <span class="menu-check" id="chk-sound">✓</span>
+          </button>
+          <button class="menu-item" data-action="toggle-voice" title="说话时小猫张嘴，并从嘴里飘出汉字（需要麦克风权限；与游戏开麦可同时使用）">
+            <span>🎤 麦克风互动（说话动嘴 + 飘字）</span>
+            <span class="menu-check" id="chk-voice"></span>
           </button>
           <button class="menu-item" data-action="toggle-top">
             <span>始终置顶显示</span>
@@ -174,6 +181,86 @@
           <button class="menu-item" data-action="reset-pos">
             <span>重置位置到右下角</span>
           </button>
+        </div>
+
+        <!-- Tab 3: Multiplayer -->
+        <div class="tab-panel hidden" data-tab-panel="net">
+          <div class="net-banner">
+            <span class="net-banner-emoji">🐾</span>
+            <span>两个人的猫，互相串门</span>
+          </div>
+
+          <div class="menu-scale-row">
+            <span class="menu-scale-label">你的显示名（会出现在对方桌面上）</span>
+            <input
+              id="net-name"
+              class="net-input"
+              type="text"
+              maxlength="16"
+              placeholder="比如：小 Q"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <div class="menu-scale-row">
+            <span class="menu-scale-label">中继服务器（公网联机用）</span>
+            <input
+              id="net-server"
+              class="net-input"
+              type="text"
+              maxlength="120"
+              placeholder="relay.example.com:27422"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span class="net-hint">留空也能玩：同一 WiFi 下用「局域网建房」</span>
+          </div>
+
+          <div class="menu-scale-row">
+            <span class="menu-scale-label">房间码（两人填一样）</span>
+            <input
+              id="net-room"
+              class="net-input net-input-code"
+              type="text"
+              maxlength="12"
+              placeholder="KURO"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <div class="net-actions">
+            <button class="kb-pill net-action" data-action="net-join" id="btn-net-join" type="button">
+              🌐 加入房间
+            </button>
+            <button class="kb-pill net-action" data-action="net-host" id="btn-net-host" type="button">
+              🏠 局域网建房
+            </button>
+            <button class="kb-pill net-action danger" data-action="net-leave" id="btn-net-leave" type="button">
+              断开
+            </button>
+          </div>
+
+          <label class="net-port-row">
+            <span>局域网端口</span>
+            <input id="net-port" class="net-input net-input-port" type="number" min="1" max="65535" step="1" />
+          </label>
+
+          <div class="net-status" id="net-status">未联机</div>
+
+          <div class="menu-scale-row">
+            <span class="menu-scale-label">朋友猫的位置</span>
+            <button class="tail-pick-trigger" data-action="reset-peer-pos" type="button">
+              <span>↩ 恢复自动摆放（按住 Alt 可拖动朋友猫）</span>
+            </button>
+          </div>
+
+          <div class="net-help">
+            同一 WiFi：点「局域网建房」，把状态里显示的 <code>IP:端口</code> 发给朋友，他在「加入房间」的服务器栏填它。<br />
+            公网：在 VPS 上运行 <code>node relay/kurocat-relay.mjs</code>，两人都填服务器地址 + 同一房间码。<br />
+            只同步键位高亮和鼠标动作，不传任何输入的文字。
+          </div>
         </div>
       </div>
 

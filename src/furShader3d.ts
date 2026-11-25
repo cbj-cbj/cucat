@@ -46,6 +46,8 @@ export interface FurPalette3D {
   point: string;
   earOuter: string | null;
   tailBase: string | null;
+  /** Colour of the tail tip (3D); null keeps the body colour. */
+  tailTip?: string | null;
   inner: string;
   stripes: number;
   muzzle: number;
@@ -70,6 +72,8 @@ export interface FurPalette3D {
   eyeCatchlight: boolean;
   isDarkFur: boolean;
   lightContour: string | null;
+  /** Half-width of the white face blaze at its top edge (0.05..0.40). */
+  blazeWidth?: number;
   accent: string;
   accentRight: string;
   accentSide: string;
@@ -339,12 +343,13 @@ export function resolveFurPalette3D(skin: CatSkinConfig, style: RenderStyle3D): 
           skin.tailColor && skin.tailColor.toLowerCase() !== (skin.furColor || '').toLowerCase()
             ? skin.tailColor
             : null,
+        tailTip: skin.tailTipColor || null,
         inner: skin.earInnerColor || '#f0bcc0',
         stripes: pat === 'tabby' ? 1 : 0,
         muzzle: pat === 'tabby' || pat === 'bicolor' || pat === 'tuxedo' ? 1 : 0,
         bib: skin.bellyBibColor || pat === 'bicolor' || pat === 'tuxedo' ? 1 : 0,
         calico: pat === 'calico' ? 1 : 0,
-        tuxedo: pat === 'tuxedo' || pat === 'bicolor' ? 1 : 0,
+        tuxedo: pat === 'tuxedo' || pat === 'bicolor' || skin.whiteBlaze === true ? 1 : 0,
         points: pat === 'siamese' || pat === 'bicolor' ? 1 : 0,
         innerAmt: skin.earInnerColor ? 0.9 : 0,
         shade: is3D ? 0.86 : 0,
@@ -363,6 +368,8 @@ export function resolveFurPalette3D(skin: CatSkinConfig, style: RenderStyle3D): 
         eyeCatchlight: skin.eyeCatchlight !== false,
         isDarkFur: isDark,
         lightContour: isDark ? null : skin.outlineColor || '#6b5e54',
+        blazeWidth:
+          typeof skin.blazeWidth === 'number' ? Math.min(0.40, Math.max(0.05, skin.blazeWidth)) : 0.14,
         accent,
         accentRight,
         accentSide,
@@ -391,6 +398,7 @@ export class FurShaderSystem {
       uInner: { value: new THREE.Color('#272931') },
       uStripes: { value: 0 },
       uMuzzle: { value: 0 },
+      uBlazeWidth: { value: 0.14 },
       uBib: { value: 0 },
       uCalico: { value: 0 },
       uTuxedo: { value: 0 },
@@ -403,6 +411,8 @@ export class FurShaderSystem {
       uEarOuterAmt: { value: 0 },
       uTailBase: { value: new THREE.Color('#141315') },
       uTailBaseAmt: { value: 0 },
+      uTailTip: { value: new THREE.Color('#141315') },
+      uTailTipAmt: { value: 0 },
       uSpotCount: { value: 0 },
       uSpotPos: { value: Array.from({ length: MAX_CUSTOM_SPOTS }, () => new THREE.Vector4()) },
       uSpotCol: { value: Array.from({ length: MAX_CUSTOM_SPOTS }, () => new THREE.Vector4()) },
@@ -516,7 +526,10 @@ export class FurShaderSystem {
 
     const fragmentShader = `
       uniform vec3 uFur, uLight, uDark, uPatchA, uPatchB, uPoint, uInner, uPawColor, uEarOuter, uTailBase;
+      uniform vec3 uTailTip;
       uniform float uStripes, uMuzzle, uBib, uCalico, uTuxedo, uPoints, uInnerAmt, uShade, uIsDarkFur, uEarOuterAmt, uTailBaseAmt;
+      uniform float uTailTipAmt;
+      uniform float uBlazeWidth;
       uniform int uSpotCount;
       uniform vec4 uSpotPos[${MAX_CUSTOM_SPOTS}];
       uniform vec4 uSpotCol[${MAX_CUSTOM_SPOTS}];
@@ -577,7 +590,7 @@ export class FurShaderSystem {
 
               if (uTuxedo > 0.01) {
                 // Wide fluffy inverted-V Ragdoll / Tuxedo white blaze flowing smoothly down into the chest bib!
-                float blazePeak = (1.0 - smoothstep(0.0, 0.14, abs(q.x) - max(0.0, (0.34 - q.y) * 0.72)))
+                float blazePeak = (1.0 - smoothstep(0.0, uBlazeWidth, abs(q.x) - max(0.0, (0.34 - q.y) * 0.55)))
                                 * smoothstep(-0.75, -0.25, q.y)
                                 * (1.0 - smoothstep(0.26, 0.42, q.y))
                                 * smoothstep(0.12, 0.36, hp.z);
@@ -586,9 +599,9 @@ export class FurShaderSystem {
             }
 
             if (uStripes > 0.01) {
-              // Tabby forehead "M" & cheek whiskers-line streaks
-              float mk = stroke(q, vec2(0.0, 0.36), vec2(0.0, 0.82), 0.072, 0.52);
-              mk = max(mk, stroke(vec2(abs(q.x), q.y), vec2(0.16, 0.34), vec2(0.30, 0.80), 0.062, 0.44));
+              // Tabby forehead "M": outer strokes plus inner diagonals meeting low.
+              float mk = stroke(vec2(abs(q.x), q.y), vec2(0.30, 0.30), vec2(0.255, 0.80), 0.058, 0.46);
+              mk = max(mk, stroke(vec2(abs(q.x), q.y), vec2(0.255, 0.80), vec2(0.015, 0.33), 0.058, 0.46));
               mk = max(mk, stroke(vec2(abs(q.x), q.y), vec2(0.66, 0.04), vec2(0.96, 0.14), 0.058, 0.42));
               mk = max(mk, stroke(vec2(abs(q.x), q.y), vec2(0.68, -0.18), vec2(0.96, -0.12), 0.052, 0.42));
               dark = max(dark, mk * uStripes * headZone * smoothstep(0.05, 0.30, hp.z));
@@ -687,6 +700,7 @@ export class FurShaderSystem {
           #endif
           #ifdef TAIL
             col = mix(col, uTailBase, uTailBaseAmt * smoothstep(0.0, 0.24, vAlong));
+            col = mix(col, uTailTip, uTailTipAmt * (1.0 - smoothstep(0.0, 0.30, vAlong)));
           #endif
           col = mix(col, uPatchA, pa * uCalico);
           col = mix(col, uPatchB, pb * uCalico);
@@ -814,6 +828,8 @@ export class FurShaderSystem {
     setColor('uPawColor', p.paw);
     this.uniforms.uStripes.value = p.stripes;
     this.uniforms.uMuzzle.value = p.muzzle;
+    this.uniforms.uBlazeWidth.value =
+      typeof p.blazeWidth === 'number' ? Math.min(0.40, Math.max(0.05, p.blazeWidth)) : 0.14;
     this.uniforms.uBib.value = p.bib;
     this.uniforms.uCalico.value = p.calico;
     this.uniforms.uTuxedo.value = p.tuxedo;
@@ -832,6 +848,12 @@ export class FurShaderSystem {
       this.uniforms.uTailBaseAmt.value = 1.0;
     } else {
       this.uniforms.uTailBaseAmt.value = 0.0;
+    }
+    if (p.tailTip) {
+      setColor('uTailTip', p.tailTip);
+      this.uniforms.uTailTipAmt.value = 1.0;
+    } else {
+      this.uniforms.uTailTipAmt.value = 0.0;
     }
 
     const list = Array.isArray(spots) ? spots.slice(0, MAX_CUSTOM_SPOTS) : [];

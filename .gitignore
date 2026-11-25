@@ -3,6 +3,12 @@ dist/
 dist-web/
 src-tauri/target/
 src-tauri/target-win7/
+# Local toolchain sandbox + scratch dirs used while building/testing.
+tools/
+.tmp/
+.test/
+.pnpm-store/
+*_lock.yaml
 *.exe
 *.msi
 *.log
@@ -18,3 +24,11 @@ android/app/src/main/assets/web/
 *.keystore
 *.apk
 *.aab
+
+# Local build artifacts and backups (never commit)
+backups/
+portable/
+.deploy/
+.backup/
+*.zip
+WebView2Loader.dll

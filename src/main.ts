@@ -9,6 +9,8 @@ import {
   type TailKeyMode,
 } from './catEngine';
 import { catAudio } from './audio';
+import { voiceMeter } from './voiceMeter';
+import { SpeechBubbles } from './speechBubbles';
 import { DEFAULT_BUILTIN_CATS, type CatSkinConfig } from './catSkins';
 import {
   getKeyboardLayout,
@@ -45,6 +47,13 @@ interface AppSettings {
   renderMode?: DesktopRenderMode;
   collarColor?: CollarColorId;
   headphoneMode?: HeadphoneMode;
+  netName?: string;
+  netServer?: string;
+  netRoom?: string;
+  netPort?: number;
+  peerX?: number | null;
+  peerY?: number | null;
+  voiceEnabled?: boolean;
 }
 
 type InputEvent =
@@ -150,6 +159,7 @@ let settings: AppSettings = {
   renderMode: '3d',
   collarColor: 'none',
   headphoneMode: 'off',
+  voiceEnabled: false,
 };
 
 let catList: CatSkinConfig[] = [...DEFAULT_BUILTIN_CATS];
@@ -174,6 +184,8 @@ const btnTailCancelEl = document.getElementById('btn-tail-cancel') as HTMLButton
 const tailModeBadgeEl = document.getElementById('tail-mode-badge') as HTMLSpanElement;
 const tailKeysCountEl = document.getElementById('tail-keys-count') as HTMLSpanElement;
 const engine = new KuroCatEngine(canvas);
+const speechLayerEl = document.getElementById('speech-layer') as HTMLDivElement | null;
+const speechBubbles = new SpeechBubbles(speechLayerEl);
 
 // Lazy-loaded Three.js 3D engine (NEVER imported when user stays in 2D mode -> +0 MB overhead!)
 let engine3d: KuroCatEngine3D | null = null;
@@ -183,6 +195,16 @@ let isWin7Ulw = false;
 let active3d = false;
 let privacyActive = false;
 let gameActive = false;
+
+/** Microphone → mouth animation + floating characters. */
+voiceMeter.onLevel = (level: number) => {
+  engine3d?.setVoiceLevel(level);
+  const talking = level > 0.16 && active3d && !privacyActive;
+  if (!talking) return;
+  const mouth = engine3d?.getMouthScreenPoint();
+  if (!mouth) return;
+  speechBubbles.spawnAt(mouth.x, mouth.y, level, level > 0.5 ? 90 : 150);
+};
 
 function shouldWearHeadphonesNow(): boolean {
   if (settings.catBreed === 'dafeiyu') return false;
@@ -408,7 +430,24 @@ function syncMenuUI(): void {
   }
   catAudio.setEnabled(settings.soundEnabled);
   activateRenderEngine();
+  void syncVoice();
   if (tailPickerOpen) syncTailPickerSelection();
+}
+
+/** Starts/stops microphone capture to match the setting (off by default). */
+async function syncVoice(): Promise<void> {
+  const want = Boolean(settings.voiceEnabled);
+  if (want === voiceMeter.isRunning) return;
+  if (!want) {
+    voiceMeter.stop();
+    engine3d?.setVoiceLevel(0);
+    speechBubbles.clear();
+    return;
+  }
+  const ok = await voiceMeter.start();
+  if (!ok) {
+    console.warn('[kurocat] microphone unavailable');
+  }
 }
 
 function syncWindowInteractiveState(): void {

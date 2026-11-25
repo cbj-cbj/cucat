@@ -16,6 +16,11 @@ path = "src/main.rs"
 [features]
 default = []
 layout-108 = []
+# Production builds embed the frontend into the binary and serve it over the
+# custom protocol. WITHOUT this feature Tauri compiles in dev mode and the window
+# tries to load http://localhost:1420 (shows "localhost refused to connect" when
+# no Vite dev server is running). `tauri build` enables it automatically.
+custom-protocol = ["tauri/custom-protocol"]
 win7 = ["tauri/custom-protocol"]
 
 [build-dependencies]
@@ -44,6 +49,8 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
+  "Win32_Security",
 ] }
 windows = { version = "0.58", features = [
   "Win32_Foundation",

@@ -322,6 +322,7 @@ function createEyeShaderMaterial(side: -1 | 1): THREE.ShaderMaterial {
       uPupilCenter: { value: new THREE.Vector2(0, 0) },
       uPupilRad: { value: new THREE.Vector2(0.43, 0.67) },
       uCross: { value: 0 },
+      uSoft: { value: 0 },
       uCurious: { value: 0 },
       uShineAmt: { value: 0 },
       uIs3D: { value: 1 },
@@ -352,6 +353,7 @@ function createEyeShaderMaterial(side: -1 | 1): THREE.ShaderMaterial {
       uniform vec2 uPupilCenter;
       uniform vec2 uPupilRad;
       uniform float uCross;
+      uniform float uSoft;
       uniform float uCurious;
       uniform float uShineAmt;
       uniform float uIs3D;
@@ -382,6 +384,16 @@ function createEyeShaderMaterial(side: -1 | 1): THREE.ShaderMaterial {
           lidAlpha = 1.0 - smoothstep(lashH - aa, lashH + aa, lidDist);
           lashMask = smoothstep(-aa, aa, lidDist);
           lidShadow = smoothstep(-0.24, 0.0, lidDist) * 0.25 * uCross;
+        }
+
+        // Gentle / pleading look: a soft drooping upper lid that hides the top of the iris.
+        if (uSoft > 0.01) {
+          float softLidY = mix(1.06, 0.62, clamp(uSoft, 0.0, 1.0)) - p.x * 0.06 * uSide;
+          float softA = 0.03 + 0.05 * uSoft;
+          float softD = p.y - softLidY;
+          if (softD > softA + aa) discard;
+          lidAlpha *= 1.0 - smoothstep(softA - aa, softA + aa, softD);
+          lidShadow = max(lidShadow, smoothstep(-0.22, 0.0, softD) * 0.20 * uSoft);
         }
 
         // Luminous glass-cabochon iris gradient
@@ -701,6 +713,14 @@ export class KuroCatEngine3D {
   private lastInput = 0;
   private lastKey = -100;
   private lastMouse = -100;
+  /** 0..1: how much the upper eyelid droops at rest (gentle / pleading look). */
+  private eyeSoft = 0;
+  /** Microphone loudness driving the talking mouth. */
+  private voiceTarget = 0;
+  private voiceLevel = 0;
+  private mouthLineMesh: THREE.Mesh | null = null;
+  private mouthOpenMesh: THREE.Mesh | null = null;
+  private mouthCenterLocal: THREE.Vector3 | null = null;
   private lastMouseNX = 0.5;
   private lastMouseNY = 0.5;
   private lastCursorRelX = 0.5;
@@ -1038,7 +1058,17 @@ export class KuroCatEngine3D {
         },
         () => 0.0050,
       );
-      this.faceGroup.add(noseMesh, mouth.mesh);
+      // Open mouth shown while the microphone hears speech (the ω line hides).
+      const mouthOpen = new THREE.Mesh(
+        new THREE.CircleGeometry(0.030, 20),
+        new THREE.MeshBasicMaterial({ color: '#3a1f27', transparent: true, opacity: 0.97 }),
+      );
+      mouthOpen.position.set(0, NY - 0.058, this.surfaceZ(0, NY - 0.058) + 0.0238);
+      mouthOpen.renderOrder = 13;
+      mouthOpen.visible = false;
+      this.mouthLineMesh = mouth.mesh;
+      this.mouthOpenMesh = mouthOpen;
+      this.faceGroup.add(noseMesh, mouth.mesh, mouthOpen);
       this.headMount.add(this.faceGroup);
     }
 
@@ -1529,8 +1559,35 @@ export class KuroCatEngine3D {
     }, sleepMs);
   };
 
+  /** 0..1 microphone loudness: opens the mouth while the user speaks. */
+  public setVoiceLevel(level: number): void {
+    this.voiceTarget = Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 0;
+  }
+
+  /** Where the mouth currently is on screen (CSS px inside the webview). */
+  public getMouthScreenPoint(): { x: number; y: number } | null {
+    const mesh = this.mouthOpenMesh ?? this.mouthLineMesh;
+    if (!mesh) return null;
+    if (!this.mouthCenterLocal) {
+      mesh.geometry.computeBoundingBox();
+      const box = mesh.geometry.boundingBox;
+      if (!box) return null;
+      this.mouthCenterLocal = box.getCenter(new THREE.Vector3());
+    }
+    const p = this.mouthCenterLocal.clone().applyMatrix4(mesh.matrixWorld);
+    p.project(this.camera);
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: rect.left + (p.x * 0.5 + 0.5) * rect.width,
+      y: rect.top + (-p.y * 0.5 + 0.5) * rect.height,
+    };
+  }
+
   public setCatSkin(skin: CatSkinConfig): void {
     this.currentSkin = skin;
+    this.eyeSoft =
+      typeof skin.eyeSoft === 'number' ? Math.min(1, Math.max(0, skin.eyeSoft)) : 0;
     const p = resolveFurPalette3D(skin, this.renderStyle);
     this.currentPalette = p;
     this.furSystem.applyPalette(p, skin.spots || []);
@@ -2026,6 +2083,17 @@ export class KuroCatEngine3D {
     this.elapsed += dt;
     const t = this.elapsed;
 
+    // 0) Talking: the mouth opens with loudness (no fur bristling any more).
+    this.voiceLevel += (this.voiceTarget - this.voiceLevel) * Math.min(1, dt * 18);
+    const voiceOpen = Math.max(0, Math.min(1, (this.voiceLevel - 0.05) / 0.55));
+    if (this.mouthLineMesh) this.mouthLineMesh.visible = voiceOpen < 0.18;
+    if (this.mouthOpenMesh) {
+      this.mouthOpenMesh.visible = voiceOpen >= 0.18;
+      const sy = 0.6 + voiceOpen * 3.4;
+      const sx = 0.9 + voiceOpen * 0.5;
+      this.mouthOpenMesh.scale.set(sx, sy, 1);
+    }
+
     // 1) Camera smooth 360° turntable framing (skip redundant lookAt matrix rebuild when static)
     const az = (this.sOrbitAz.step(this.orbitAzimuthTarget, dt) * Math.PI) / 180;
     const el = (this.sOrbitEl.step(this.orbitElevTarget, dt) * Math.PI) / 180;
@@ -2325,6 +2393,7 @@ export class KuroCatEngine3D {
         (e.mat.uniforms.uPupilCenter.value as THREE.Vector2).set(px / irisRx, py / irisRy);
         (e.mat.uniforms.uPupilRad.value as THREE.Vector2).set(pRx / irisRx, pRy / irisRy);
         e.mat.uniforms.uCross.value = cross;
+        e.mat.uniforms.uSoft.value = this.eyeSoft;
         e.mat.uniforms.uCurious.value = curious;
         e.mat.uniforms.uShineAmt.value = shineAmt;
       }

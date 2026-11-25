@@ -23,6 +23,12 @@ export interface CatSkinConfig {
   legLineColor?: string;
 
   pattern?: CatPattern;
+  /** Force the tuxedo/bicolor white face blaze + bib while keeping another pattern. */
+  whiteBlaze?: boolean;
+  /** Half-width of the white blaze at its top edge (0.05..0.40). */
+  blazeWidth?: number;
+  /** 0..1: how much the upper eyelid droops at rest (gentle / pleading look). */
+  eyeSoft?: number;
   maskColor?: string;
   foreheadBridgeColor?: string;
   flankColor?: string;
@@ -72,6 +78,9 @@ export interface ResolvedSkin {
   outlineColor: string | null;
   legLineColor: string;
   pattern: CatPattern;
+  whiteBlaze: boolean;
+  blazeWidth: number;
+  eyeSoft: number;
   maskColor: string | null;
   foreheadBridgeColor: string | null;
   flankColor: string | null;
@@ -141,6 +150,10 @@ export function resolveCustomSkin(raw: CatSkinConfig): ResolvedSkin {
     legLineColor:
       raw.legLineColor || (darkBase ? 'rgba(214, 218, 224, 0.62)' : 'rgba(82, 72, 64, 0.62)'),
     pattern,
+    whiteBlaze: raw.whiteBlaze === true,
+    blazeWidth:
+      typeof raw.blazeWidth === 'number' ? Math.min(0.40, Math.max(0.05, raw.blazeWidth)) : 0.14,
+    eyeSoft: typeof raw.eyeSoft === 'number' ? Math.min(1, Math.max(0, raw.eyeSoft)) : 0,
     maskColor: raw.maskColor || (pattern === 'siamese' ? '#4a382c' : pattern === 'bicolor' ? '#9e8e7f' : null),
     foreheadBridgeColor: raw.foreheadBridgeColor || null,
     flankColor: raw.flankColor || null,
@@ -182,8 +195,44 @@ export function resolveCustomSkin(raw: CatSkinConfig): ResolvedSkin {
         : (!pawIsLight ? 'rgba(216, 218, 222, 0.62)' : null),
     accentColor: raw.accentColor || '#d2f244',
     accentSideColor: raw.accentSideColor || '#8cb014',
-    spots: Array.isArray(raw.spots) ? raw.spots : [],
+    spots: sanitizeSpots(raw.spots),
   };
+}
+
+const SPOT_PARTS = new Set(['head', 'body', 'leftArm', 'rightArm']);
+
+/**
+ * Spots come from user-edited JSON / MCP, where a typo used to be able to break
+ * the whole render. Clamp everything into a sane range and drop invalid entries.
+ */
+export function sanitizeSpots(raw: unknown): CatSpot[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CatSpot[] = [];
+  for (const item of raw.slice(0, 8)) {
+    if (!item || typeof item !== 'object') continue;
+    const spot = item as Partial<CatSpot>;
+    const part = String(spot.part ?? '');
+    if (!SPOT_PARTS.has(part)) continue;
+    const color = typeof spot.color === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(spot.color.trim())
+      ? spot.color.trim()
+      : null;
+    if (!color) continue;
+    const num = (v: unknown, min: number, max: number, fallback: number): number => {
+      const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+      return Math.min(max, Math.max(min, n));
+    };
+    out.push({
+      part: part as CatSpot['part'],
+      x: num(spot.x, -2, 2, 0),
+      y: num(spot.y, -2, 2, 0),
+      rx: num(spot.rx, 0.5, 400, 8),
+      ry: num(spot.ry, 0.5, 400, 8),
+      rotation: num(spot.rotation, -Math.PI, Math.PI, 0),
+      color,
+      opacity: num(spot.opacity, 0, 1, 0.85),
+    });
+  }
+  return out;
 }
 
 export const DEFAULT_BUILTIN_CATS: CatSkinConfig[] = [

@@ -28,6 +28,13 @@ interface AppSettings {
   renderMode?: '2d' | '3d';
   collarColor?: 'none' | 'red' | 'blue' | 'pink' | 'green';
   headphoneMode?: 'auto' | 'on' | 'off';
+  netName?: string;
+  netServer?: string;
+  netRoom?: string;
+  netPort?: number;
+  peerX?: number | null;
+  peerY?: number | null;
+  voiceEnabled?: boolean;
 }
 
 interface UpdateInfo {
@@ -49,7 +56,16 @@ interface UpdateProgressEvent {
   info?: UpdateInfo | null;
 }
 
-type MenuTabId = 'appearance' | 'system';
+type MenuTabId = 'appearance' | 'system' | 'net';
+
+interface NetStatusPayload {
+  state: string;
+  role?: string;
+  detail?: string;
+  peers?: number;
+  room?: string;
+  server?: string;
+}
 
 const isMacPlatform = (): boolean =>
   /Mac/i.test(navigator.platform) || /Macintosh/i.test(navigator.userAgent);
@@ -84,6 +100,10 @@ let settings: AppSettings = {
   renderMode: '3d',
   collarColor: 'none',
   headphoneMode: 'off',
+  netName: '',
+  netServer: '',
+  netRoom: '',
+  netPort: 27422,
 };
 
 let catList: CatSkinConfig[] = [...DEFAULT_BUILTIN_CATS];
@@ -177,6 +197,7 @@ function syncUI(): void {
   setCheck('chk-bubbles', settings.showKeyBubbles);
   setCheck('chk-lock', settings.clickThroughLocked);
   setCheck('chk-sound', settings.soundEnabled);
+  setCheck('chk-voice', Boolean(settings.voiceEnabled));
   setCheck('chk-top', settings.alwaysOnTop);
   setCheck('chk-autostart', settings.autostart);
   setCheck('chk-mcp', settings.mcpEnabled);
@@ -261,6 +282,8 @@ function syncUI(): void {
     headerEl.textContent = `${emoji} KuroCat ${activeCat.name}`;
     headerEl.style.color = activeCat.accentColor || '#c8f538';
   }
+
+  syncNetUI();
 }
 
 async function applySettingsPatch(patch: Partial<AppSettings>): Promise<void> {
@@ -324,6 +347,119 @@ async function copyObsUrl(): Promise<void> {
   }
 }
 
+function netInput(id: string): HTMLInputElement | null {
+  return document.getElementById(id) as HTMLInputElement | null;
+}
+
+function syncNetUI(): void {
+  const nameEl = netInput('net-name');
+  const serverEl = netInput('net-server');
+  const roomEl = netInput('net-room');
+  const portEl = netInput('net-port');
+  if (nameEl && document.activeElement !== nameEl) nameEl.value = settings.netName || '';
+  if (serverEl && document.activeElement !== serverEl) serverEl.value = settings.netServer || '';
+  if (roomEl && document.activeElement !== roomEl) roomEl.value = settings.netRoom || '';
+  if (portEl && document.activeElement !== portEl) portEl.value = String(settings.netPort || 27422);
+}
+
+function renderNetStatus(state: string, detail: string): void {
+  const el = document.getElementById('net-status');
+  if (!el) return;
+  el.textContent = detail;
+  el.classList.toggle('ok', state === 'connected' || state === 'waiting');
+  el.classList.toggle('err', state === 'error');
+}
+
+function readNetForm(): { name: string; server: string; room: string; port: number } {
+  return {
+    name: netInput('net-name')?.value.trim() ?? '',
+    server: netInput('net-server')?.value.trim() ?? '',
+    room: (netInput('net-room')?.value.trim() ?? '').toUpperCase(),
+    port: Number(netInput('net-port')?.value ?? '0') || 27422,
+  };
+}
+
+async function startLanRoom(): Promise<void> {
+  const { name, room, port } = readNetForm();
+  if (!room) {
+    renderNetStatus('error', '请先填一个房间码，比如 KURO');
+    return;
+  }
+  renderNetStatus('connecting', `正在开启局域网房间（端口 ${port}）…`);
+  try {
+    const addr = await invoke<string>('net_host', { port, room, name });
+    renderNetStatus(
+      'connected',
+      `房间已开启：${addr}。让朋友在「加入房间」的服务器栏填这个地址，房间码填 ${room}。`,
+    );
+  } catch (err) {
+    renderNetStatus('error', String(err));
+  }
+}
+
+async function joinRoom(): Promise<void> {
+  const { name, server, room } = readNetForm();
+  if (!room) {
+    renderNetStatus('error', '请先填房间码');
+    return;
+  }
+  if (!server) {
+    renderNetStatus('error', '请填写服务器地址：公网填中继地址，局域网填「朋友 IP:端口」');
+    return;
+  }
+  renderNetStatus('connecting', `正在连接 ${server} …`);
+  try {
+    await invoke('net_connect', { server, room, name });
+  } catch (err) {
+    renderNetStatus('error', String(err));
+  }
+}
+
+async function leaveRoom(): Promise<void> {
+  try {
+    await invoke('net_disconnect');
+  } catch (err) {
+    console.error('Failed to leave room:', err);
+  }
+  renderNetStatus('idle', '已断开联机');
+}
+
+async function refreshNetStatus(): Promise<void> {
+  try {
+    const st = await invoke<{ connected: boolean; hosting: boolean }>('net_status');
+    if (st.connected) {
+      renderNetStatus('connected', '已联机');
+    } else {
+      renderNetStatus('idle', '未联机');
+    }
+  } catch {
+    // Older backend without multiplayer support.
+  }
+}
+
+function bindNetInputs(): void {
+  const nameEl = netInput('net-name');
+  const serverEl = netInput('net-server');
+  const roomEl = netInput('net-room');
+  const portEl = netInput('net-port');
+  nameEl?.addEventListener('change', () => {
+    void applySettingsPatch({ netName: nameEl.value.trim() });
+  });
+  serverEl?.addEventListener('change', () => {
+    void applySettingsPatch({ netServer: serverEl.value.trim() });
+  });
+  roomEl?.addEventListener('change', () => {
+    const room = roomEl.value.trim().toUpperCase();
+    roomEl.value = room;
+    void applySettingsPatch({ netRoom: room });
+  });
+  portEl?.addEventListener('change', () => {
+    const port = Math.max(1, Math.min(65535, Number(portEl.value) || 27422));
+    portEl.value = String(port);
+    void applySettingsPatch({ netPort: port });
+  });
+}
+
 async function createDesktopShortcut(): Promise<void> {
   const hint = document.getElementById('shortcut-hint');
   try {
@@ -345,6 +481,33 @@ async function createDesktopShortcut(): Promise<void> {
       }, 1800);
     }
   }
+}
+
+/** Quitting needs a second click: the "退出" button sits right under the footer. */
+let quitArmedUntil = 0;
+let quitResetTimer: number | null = null;
+
+function handleQuitClick(button: HTMLElement | null): void {
+  if (!button) {
+    void invoke('quit_app');
+    return;
+  }
+  const now = Date.now();
+  if (now < quitArmedUntil) {
+    void invoke('quit_app');
+    return;
+  }
+  quitArmedUntil = now + 3000;
+  const original = button.textContent ?? '';
+  button.textContent = '再点一次确认退出';
+  button.classList.add('confirm');
+  if (quitResetTimer !== null) window.clearTimeout(quitResetTimer);
+  quitResetTimer = window.setTimeout(() => {
+    quitArmedUntil = 0;
+    quitResetTimer = null;
+    button.textContent = original;
+    button.classList.remove('confirm');
+  }, 3000);
 }
 
 async function triggerManualUpdateCheck(): Promise<void> {
@@ -435,6 +598,9 @@ async function bootstrap(): Promise<void> {
 
   document.getElementById('btn-close-menu')?.addEventListener('click', () => closeMenu());
 
+  bindNetInputs();
+  void refreshNetStatus();
+
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeMenu();
   });
@@ -473,7 +639,7 @@ async function bootstrap(): Promise<void> {
     const tabBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tab]');
     if (tabBtn) {
       const t = tabBtn.dataset.tab;
-      if (t === 'appearance' || t === 'system') {
+      if (t === 'appearance' || t === 'system' || t === 'net') {
         switchTab(t);
       }
       return;
@@ -551,6 +717,9 @@ async function bootstrap(): Promise<void> {
       case 'toggle-sound':
         void applySettingsPatch({ soundEnabled: !settings.soundEnabled });
         break;
+      case 'toggle-voice':
+        void applySettingsPatch({ voiceEnabled: !settings.voiceEnabled });
+        break;
       case 'toggle-top':
         void applySettingsPatch({ alwaysOnTop: !settings.alwaysOnTop });
         break;
@@ -590,11 +759,23 @@ async function bootstrap(): Promise<void> {
         void invoke('reset_position');
         closeMenu();
         break;
+      case 'net-host':
+        void startLanRoom();
+        break;
+      case 'net-join':
+        void joinRoom();
+        break;
+      case 'net-leave':
+        void leaveRoom();
+        break;
+      case 'reset-peer-pos':
+        void invoke('reset_peer_window_pos').catch(() => undefined);
+        break;
       case 'check-update':
         void triggerManualUpdateCheck();
         break;
       case 'quit':
-        void invoke('quit_app');
+        handleQuitClick(target);
         break;
     }
   });
@@ -627,6 +808,13 @@ async function bootstrap(): Promise<void> {
     }
   });
 
+  await listen<NetStatusPayload>('kuro-peer-status', (ev) => {
+    const p = ev.payload;
+    if (!p || !p.state) return;
+    const detail = p.detail && p.detail.trim() ? p.detail : p.state;
+    renderNetStatus(p.state, detail);
+  });
+
   await listen('kuro-menu-opened', async () => {
     try {
       const [latestSettings, latestCats, cachedUpd] = await Promise.all([
@@ -644,6 +832,7 @@ async function bootstrap(): Promise<void> {
       syncUI();
       renderFooterUpdateState();
       if (tabBodyEl) tabBodyEl.scrollTop = 0;
+      void refreshNetStatus();
     } catch {}
   });
 }

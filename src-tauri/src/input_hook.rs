@@ -378,6 +378,7 @@ pub fn start_global_hooks(app: AppHandle) {
 
         let emit_input = |app: &AppHandle, ev: InputEvent| {
             crate::obs::broadcast_input(&ev);
+            crate::net::broadcast_input(&ev);
             let _ = app.emit("kuro-input", ev);
         };
 

@@ -1,0 +1,8 @@
+# Windows GNU toolchain (x86_64-pc-windows-gnu) builds.
+#
+# GNU ld fails to build the cdylib artifact ("export ordinal too large") when the
+# `windows` crate's import libraries are involved, and desktop builds never need a
+# cdylib. Suppressing symbol export lets `cargo build` / `cargo test` link with
+# MinGW. MSVC builds (the officially supported target) are unaffected.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--exclude-all-symbols"]

@@ -7,6 +7,7 @@ mod input_hook;
 #[cfg(target_os = "macos")]
 mod macos_window;
 mod mcp;
+mod net;
 mod obs;
 mod privacy;
 mod tray;
@@ -42,6 +43,71 @@ pub const WIN7_MIN_WINDOW_WIDTH: f64 = 260.0;
 #[cfg(windows)]
 pub const WIN7_MIN_WINDOW_HEIGHT: f64 = 410.0;
 
+/// Appends one line to `%APPDATA%/kuro-cat-pet/runtime.log`.
+///
+/// The release profile uses `panic = "abort"`, so a panic otherwise leaves no
+/// trace at all (the process just disappears with 0xc0000409).
+pub fn kuro_log(line: &str) {
+    use std::io::Write as _;
+    let path = config::app_data_dir().join("runtime.log");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::metadata(&path).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "[{}] {}", utc_timestamp(), line);
+    }
+}
+
+/// Installs a panic hook that records the message before the abort.
+pub fn install_crash_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = info.to_string().replace('\n', " | ");
+        kuro_log(&format!("PANIC {message}"));
+    }));
+    kuro_log(&format!(
+        "start v{} pid {}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    ));
+}
+
+fn utc_timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Howard Hinnant's days-since-epoch -> (year, month, day).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
 pub fn base_dimensions(layout: &str) -> (f64, f64) {
     if layout == "108" {
         (BASE_WIDTH_108, BASE_HEIGHT_108)
@@ -71,6 +137,26 @@ pub fn window_dimensions(layout: &str, scale: f64) -> (f64, f64) {
 /// while explicitly allowing the transparent headspace above the cat's ears (~17% of window height)
 /// to slide above the screen top edge (`y < v_top`), so the cat itself can reach the very top bezel
 /// without ever getting lost off-screen.
+/// True when the window rectangle overlaps a visible monitor by a sensible margin.
+/// Used to recover from a saved position left over from an unplugged monitor.
+fn position_hits_any_monitor(app: &AppHandle, x: i32, y: i32, w: i32, h: i32) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    let w = w.max(1);
+    let h = h.max(1);
+    monitors.iter().any(|monitor| {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let overlap_w = (x + w).min(pos.x + size.width as i32) - x.max(pos.x);
+        let overlap_h = (y + h).min(pos.y + size.height as i32) - y.max(pos.y);
+        overlap_w > w / 3 && overlap_h > h / 4
+    })
+}
+
 fn clamp_pet_drag_position(
     x: i32,
     y: i32,
@@ -240,7 +326,201 @@ pub fn set_pet_always_on_top(app: &AppHandle, on_top: bool) {
     }
 }
 
+pub const PEER_WINDOW_LABEL: &str = "peer";
+
+fn peer_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window(PEER_WINDOW_LABEL)
+}
+
+/// Creates the hidden window that mirrors the friend's cat. It is built once during
+/// setup so no network thread ever has to construct a webview.
+fn create_peer_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(existing) = peer_window(app) {
+        return Some(existing);
+    }
+    #[cfg(windows)]
+    if win_needs_win7_ulw() {
+        return None;
+    }
+    let (w, h) = window_dimensions("65", 1.0);
+    let built = tauri::WebviewWindowBuilder::new(
+        app,
+        PEER_WINDOW_LABEL,
+        tauri::WebviewUrl::App("peer.html".into()),
+    )
+    .title("KuroCat Friend")
+    .inner_size(w, h)
+    .decorations(false)
+    .resizable(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    // MUST match the main window's additionalBrowserArgs, see open_context_menu.
+    .additional_browser_args("--autoplay-policy=no-user-gesture-required")
+    .build()
+    .ok()?;
+    // The friend's cat is purely decorative: never steal a click from the desktop.
+    let _ = built.set_ignore_cursor_events(true);
+    let close_target = built.clone();
+    built.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = close_target.hide();
+        }
+    });
+    Some(built)
+}
+
+/// Sizes the friend's window from their layout + scale and parks it beside our own
+/// cat (left side first, flipping to the right when there is no room). A position the
+/// user dragged into place wins over the automatic one.
+fn apply_peer_window_geometry(app: &AppHandle, layout: &str, scale: f64) {
+    let Some(win) = peer_window(app) else {
+        return;
+    };
+    let (w, h) = window_dimensions(layout, scale);
+    let _ = win.set_size(Size::Logical(LogicalSize::new(w, h)));
+
+    let sf = win.scale_factor().unwrap_or(1.0);
+    let pw = (w * sf).round() as i32;
+    let ph = (h * sf).round() as i32;
+
+    let manual = {
+        let state = app.state::<AppState>();
+        let s = state.settings.lock().unwrap();
+        match (s.peer_x, s.peer_y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        }
+    };
+    if let Some((x, y)) = manual {
+        if position_hits_any_monitor(app, x, y, pw, ph) {
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+            return;
+        }
+    }
+
+    let Some(main) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(main_pos) = main.outer_position() else {
+        return;
+    };
+    let Ok(main_size) = main.outer_size() else {
+        return;
+    };
+    let gap = (14.0 * sf).round() as i32;
+    let mut x = main_pos.x - pw - gap;
+    let mut y = main_pos.y + main_size.height as i32 - ph;
+
+    if let Ok(Some(monitor)) = main.current_monitor() {
+        let area = monitor.work_area();
+        let left = area.position.x;
+        let top = area.position.y;
+        let right = left + area.size.width as i32;
+        let bottom = top + area.size.height as i32;
+        if x < left {
+            x = main_pos.x + main_size.width as i32 + gap;
+        }
+        if x + pw > right {
+            x = (right - pw).max(left);
+        }
+        y = y.clamp(top, (bottom - ph).max(top));
+    }
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Creates the friend window a moment after startup, on the main thread.
+///
+/// Building it inside `setup()` races with the first WebView2 initialisation of
+/// the main window (same user-data folder), which can abort the process on the
+/// very first launch after an update.
+fn ensure_peer_window_async(app: &AppHandle) {
+    if peer_window(app).is_some() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        let main_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = create_peer_window(&main_app);
+        });
+    });
+}
+
+pub fn set_peer_window_visible(app: &AppHandle, visible: bool) {
+    if visible {
+        // Never build a webview from this (event-callback) thread: creation is
+        // deferred to the main thread, see `ensure_peer_window_async`.
+        let Some(win) = peer_window(app) else {
+            ensure_peer_window_async(app);
+            return;
+        };
+        let _ = win.set_always_on_top(true);
+        let _ = win.show();
+        #[cfg(windows)]
+        win_gentle_reassert_topmost(&win);
+    } else if let Some(win) = peer_window(app) {
+        let _ = win.hide();
+    }
+    // Lets the page start/stop its render loops so a hidden window costs no CPU.
+    let _ = app.emit("kuro-peer-visibility", visible);
+}
+
+/// Everything the friend's window needs to look exactly like the original cat.
+pub fn net_state_payload(settings: &AppSettings) -> serde_json::Value {
+    let cats = cats::all_cats();
+    let active = cats.into_iter().find(|c| c.id == settings.cat_breed);
+    serde_json::json!({
+        "name": settings.net_name,
+        "catId": settings.cat_breed,
+        "skin": active,
+        "renderMode": settings.render_mode,
+        "keyboardLayout": settings.keyboard_layout,
+        "keyboardOrientation": settings.keyboard_orientation,
+        "scale": settings.scale,
+        "showKeyBubbles": settings.show_key_bubbles,
+        "tailKeyMode": settings.tail_key_mode,
+        "tailKeyIds": settings.tail_key_ids,
+        "collarColor": settings.collar_color,
+        "headphoneMode": settings.headphone_mode,
+    })
+}
+
+pub fn broadcast_net_state(app: &AppHandle) {
+    if !net::is_connected() {
+        return;
+    }
+    // `try_lock` keeps this safe when called from a settings listener that runs
+    // while another thread already holds the settings lock; the retry thread
+    // makes sure the last change is still delivered.
+    let snapshot = match app.state::<AppState>().settings.try_lock() {
+        Ok(guard) => Some(guard.clone()),
+        Err(_) => None,
+    };
+    match snapshot {
+        Some(snapshot) => net::broadcast_state(&net_state_payload(&snapshot)),
+        None => {
+            let retry_app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                if !net::is_connected() {
+                    return;
+                }
+                let snapshot = retry_app.state::<AppState>().settings.lock().unwrap().clone();
+                net::broadcast_state(&net_state_payload(&snapshot));
+            });
+        }
+    }
+}
+
 pub fn shutdown_pet_windows() {
+    kuro_log("clean exit requested");
+    net::stop();
     obs::shutdown_obs_server();
     #[cfg(windows)]
     if win_needs_win7_ulw() {
@@ -315,6 +595,101 @@ fn get_mcp_config(state: State<'_, AppState>) -> String {
     .unwrap_or_default()
 }
 
+/// Start a room on this machine (LAN / same Wi-Fi, or a port-forwarded host).
+/// Returns the `ip:port` the friend should paste into "join room".
+#[tauri::command]
+fn net_host(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    port: u16,
+    room: String,
+    name: String,
+) -> Result<String, String> {
+    let room = config::normalize_net_room(&room);
+    let name = config::normalize_net_name(&name);
+    let port = if port == 0 { net::DEFAULT_PORT } else { port };
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.net_room = room.clone();
+        s.net_name = name.clone();
+        s.net_port = port;
+        save_settings(&s);
+    }
+    let bound = net::start_host(app.clone(), port, &room, &name)?;
+    broadcast_net_state(&app);
+    let ip = net::local_ip_string().unwrap_or_else(|| "本机IP".to_string());
+    Ok(format!("{ip}:{bound}"))
+}
+
+/// Join a friend's room through the relay server (or a LAN host address).
+#[tauri::command]
+fn net_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server: String,
+    room: String,
+    name: String,
+) -> Result<(), String> {
+    let server = config::normalize_net_server(&server);
+    let room = config::normalize_net_room(&room);
+    let name = config::normalize_net_name(&name);
+    if server.is_empty() {
+        return Err("请填写中继服务器地址，或改用「局域网建房」".into());
+    }
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.net_server = server.clone();
+        s.net_room = room.clone();
+        s.net_name = name.clone();
+        save_settings(&s);
+    }
+    net::connect(app.clone(), &server, &room, &name)?;
+    broadcast_net_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn net_disconnect(app: AppHandle) {
+    net::stop();
+    set_peer_window_visible(&app, false);
+}
+
+/// Remember where the user dragged the friend's cat window.
+#[tauri::command]
+fn save_peer_window_pos(app: AppHandle, state: State<'_, AppState>) {
+    let Some(win) = peer_window(&app) else {
+        return;
+    };
+    let Ok(pos) = win.outer_position() else {
+        return;
+    };
+    let mut s = state.settings.lock().unwrap();
+    s.peer_x = Some(pos.x);
+    s.peer_y = Some(pos.y);
+    save_settings(&s);
+}
+
+/// Forget the manual position: the friend's cat goes back next to our own cat.
+#[tauri::command]
+fn reset_peer_window_pos(app: AppHandle, state: State<'_, AppState>) {
+    let (layout, scale) = {
+        let mut s = state.settings.lock().unwrap();
+        s.peer_x = None;
+        s.peer_y = None;
+        save_settings(&s);
+        (s.keyboard_layout.clone(), s.scale)
+    };
+    apply_peer_window_geometry(&app, &layout, scale);
+}
+
+#[tauri::command]
+fn net_status() -> serde_json::Value {
+    serde_json::json!({
+        "connected": net::is_connected(),
+        "hosting": net::relay_running(),
+    })
+}
+
 #[tauri::command]
 fn update_settings(app: AppHandle, state: State<'_, AppState>, mut patch: AppSettings) -> AppSettings {
     patch.scale = patch.scale.clamp(0.20, 1.50);
@@ -340,6 +715,12 @@ fn update_settings(app: AppHandle, state: State<'_, AppState>, mut patch: AppSet
     patch.render_mode = config::normalize_render_mode(&patch.render_mode);
     patch.collar_color = config::normalize_collar_color(&patch.collar_color);
     patch.headphone_mode = config::normalize_headphone_mode(&patch.headphone_mode);
+    patch.net_server = config::normalize_net_server(&patch.net_server);
+    patch.net_room = config::normalize_net_room(&patch.net_room);
+    patch.net_name = config::normalize_net_name(&patch.net_name);
+    if patch.net_port == 0 {
+        patch.net_port = net::DEFAULT_PORT;
+    }
 
     let (prev_autostart, prev_scale, prev_layout, prev_obs_hide) = {
         let s = state.settings.lock().unwrap();
@@ -1651,6 +2032,8 @@ fn start_hit_test_loop(
     let tail_picker_bounds = app.state::<AppState>().tail_picker_bounds.clone();
     std::thread::spawn(move || {
         let mut last_ignore: Option<bool> = None;
+    // Click-through state of the friend window (interactive only while Alt is held).
+    let mut peer_last_ignore: Option<bool> = None;
         let mut last_cursor: (i32, i32) = (i32::MIN, i32::MIN);
         let mut last_over_cat = false;
         let mut last_inside_pet = false;
@@ -1864,6 +2247,21 @@ fn start_hit_test_loop(
             #[cfg(windows)]
             if is_win7_ulw {
                 win7_layered::set_over_cat(over_cat);
+            }
+
+            // Friend cat window: click-through by default so it never blocks the
+            // desktop; holding Alt makes it interactive so it can be dragged.
+            if let Some(peer_win) = app.get_webview_window(PEER_WINDOW_LABEL) {
+                if peer_win.is_visible().unwrap_or(false) {
+                    let want_ignore = !input_hook::is_alt_pressed();
+                    if peer_last_ignore != Some(want_ignore) {
+                        let _ = peer_win.set_ignore_cursor_events(want_ignore);
+                        peer_last_ignore = Some(want_ignore);
+                    }
+                } else if peer_last_ignore != Some(true) {
+                    let _ = peer_win.set_ignore_cursor_events(true);
+                    peer_last_ignore = Some(true);
+                }
             }
 
             let over_banner = is_banner && inside && ry <= banner_hit_ry_limit(win_log_h);
@@ -2158,6 +2556,60 @@ fn win7_sync_overlay(window: tauri::WebviewWindow, rects: Vec<i32>, focus_menu: 
     }
 }
 
+/// Opens a lock file without sharing so a second instance cannot start on the
+/// same data directory. The handle is intentionally kept for the process lifetime.
+#[cfg(windows)]
+fn win_acquire_instance_lock(
+    dir: &std::path::Path,
+) -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, OPEN_ALWAYS,
+    };
+
+    let _ = std::fs::create_dir_all(dir);
+    let lock_path = dir.join("kurocat.lock");
+    let wide: Vec<u16> = lock_path
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        None
+    } else {
+        Some(handle)
+    }
+}
+
+#[cfg(windows)]
+fn win_show_already_running() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    let text: Vec<u16> = "KuroCat 已经在运行了。\n\n如果确实要同时开两个（例如自测联机），请给第二个实例一个独立的数据目录：\n\nset KUROCAT_DATA_DIR=%APPDATA%\\kuro-cat-pet-2\nKuroCat.exe"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let title: Vec<u16> = "KuroCat".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
 #[cfg(windows)]
 fn win_configure_local_webview2_runtime() {
     let Ok(exe) = std::env::current_exe() else {
@@ -2233,9 +2685,19 @@ fn linux_configure_display_env() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_crash_logger();
     #[cfg(windows)]
     {
         win_wait_for_previous_pid_if_requested();
+        // One instance per data directory: two pets would fight over settings.json.
+        // Set KUROCAT_DATA_DIR to run a second profile side by side.
+        if let Some(handle) = win_acquire_instance_lock(&config::app_data_dir()) {
+            std::mem::forget(handle);
+        } else {
+            kuro_log("another instance is already running; exiting");
+            win_show_already_running();
+            return;
+        }
         win_configure_local_webview2_runtime();
     }
     #[cfg(target_os = "linux")]
@@ -2295,7 +2757,25 @@ pub fn run() {
                     let sz = win.outer_size().unwrap_or(tauri::PhysicalSize::new(420, 440));
                     let sf = win.scale_factor().unwrap_or(1.0);
                     let (x, y) = if let (Some(x), Some(y)) = (s.x, s.y) {
-                        (x, y)
+                        // Monitor unplugged / DPI changed since the position was saved?
+                        // Never start completely off-screen (the pet would "disappear"
+                        // while the process keeps running).
+                        if position_hits_any_monitor(
+                            app.handle(),
+                            x,
+                            y,
+                            sz.width as i32,
+                            sz.height as i32,
+                        ) {
+                            (x, y)
+                        } else {
+                            kuro_log(&format!("saved position {x},{y} is off-screen; resetting"));
+                            if let Ok(mut saved) = settings_for_setup.lock() {
+                                saved.x = None;
+                                saved.y = None;
+                            }
+                            default_bottom_right_position(sz.width as i32, sz.height as i32, sf)
+                        }
                     } else {
                         default_bottom_right_position(sz.width as i32, sz.height as i32, sf)
                     };
@@ -2368,8 +2848,68 @@ pub fn run() {
                 }
             }
 
-            tray::setup_tray(&handle, &s)?;
+            // A missing shell (kiosk / minimal RDP session) must not kill the pet:
+            // the tray is a convenience, the cat window and the menu still work.
+            if let Err(err) = tray::setup_tray(&handle, &s) {
+                eprintln!("[kurocat] system tray unavailable: {err}");
+            }
             input_hook::start_global_hooks(handle.clone());
+
+            // ---- multiplayer ---------------------------------------------------
+            // The friend window is created 1.5 s after startup: creating a second
+            // WebView2 on top of the first one's initialisation can abort the app.
+            ensure_peer_window_async(&handle);
+
+            let settings_net_handle = handle.clone();
+            handle.listen("kuro-settings", move |_| {
+                broadcast_net_state(&settings_net_handle);
+            });
+            let cats_net_handle = handle.clone();
+            handle.listen("kuro-cats", move |_| {
+                broadcast_net_state(&cats_net_handle);
+            });
+            let peer_state_handle = handle.clone();
+            handle.listen(net::EVENT_STATE, move |ev| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(ev.payload()) else {
+                    return;
+                };
+                let layout = value
+                    .get("keyboardLayout")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("65")
+                    .to_string();
+                let scale = value.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                apply_peer_window_geometry(&peer_state_handle, &layout, scale);
+            });
+            let presence_handle = handle.clone();
+            handle.listen(net::EVENT_PRESENCE, move |ev| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(ev.payload()) else {
+                    return;
+                };
+                let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                // `count` includes ourselves, so a friend is present only at >= 2.
+                let friend_present = count > 1;
+                set_peer_window_visible(&presence_handle, friend_present);
+                if friend_present {
+                    // Re-announce our look when someone walks in: the state sent at
+                    // join time reached an empty room.
+                    let state_handle = presence_handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(60));
+                        broadcast_net_state(&state_handle);
+                    });
+                }
+            });
+            let status_handle = handle.clone();
+            handle.listen(net::EVENT_STATUS, move |ev| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(ev.payload()) else {
+                    return;
+                };
+                let state = value.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                if state == "idle" || state == "error" {
+                    set_peer_window_visible(&status_handle, false);
+                }
+            });
             privacy::start_password_privacy_watcher(
                 handle.clone(),
                 settings_for_setup.clone(),
@@ -2475,6 +3015,12 @@ pub fn run() {
             is_win7_ulw_mode,
             win7_present_frame,
             win7_sync_overlay,
+            net_host,
+            net_connect,
+            net_disconnect,
+            net_status,
+            save_peer_window_pos,
+            reset_peer_window_pos,
             save_window_pos,
             reset_position,
             create_desktop_shortcut,

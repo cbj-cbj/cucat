@@ -1,0 +1,24 @@
+[Unit]
+Description=KuroCat relay server (two friends, one room)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the working directory / user to match your VPS.
+WorkingDirectory=/opt/kurocat-relay
+ExecStart=/usr/bin/node /opt/kurocat-relay/kurocat-relay.mjs --port 27422
+Restart=always
+RestartSec=3
+User=kurocat
+Group=kurocat
+
+# Hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/kurocat-relay
+
+[Install]
+WantedBy=multi-user.target
